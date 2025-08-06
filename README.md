@@ -1,10 +1,7 @@
 # esp32_TFTSPI
 
 
-
-
-
-
+### host: M4800 @ office , Arduino IDE 2.3.6
 
 #### gemini
 在 KMRTM28038-SPI 上顯示 IP 與時間
