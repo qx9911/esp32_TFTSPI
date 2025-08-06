@@ -1,0 +1,163 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include "time.h"
+#include <TFT_eSPI.h>
+
+// 你的 WiFi 資訊
+const char* ssid = "fellow";
+const char* password = "bejoyful";
+
+// 你的氣象署授權碼和地點
+// 1. 請前往 https://opendata.cwa.gov.tw 申請授權碼
+// 20250806: ax9911@gmail.com / 2025Gala1051# 
+const char* Authorization = "CWA-B56723F5-E3E8-4816-9517-6335E7C73457";
+// 2. 你的地點，例如 "新竹市"、"臺北市"
+const char* locationName = "新竹市";
+
+// 氣象署 API 資訊
+const char* host = "opendata.cwa.gov.tw";
+const char* api_path = "/api/v1/rest/datastore/F-C0032-001";
+String api_url = String("https://") + host + api_path + "?Authorization=" + Authorization + "&locationName=" + locationName;
+
+// 時間伺服器
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 28800;
+const int   daylightOffset_sec = 0;
+
+// 宣告 TFT 螢幕物件
+TFT_eSPI tft = TFT_eSPI();
+
+// 全域變數來儲存天氣資訊
+String weatherDescription = "Loading...";
+int minTemp = 0;
+int maxTemp = 0;
+int pop = 0; // 新增：降雨機率
+
+// 取得天氣資料的函式
+void getWeather() {
+  HTTPClient http;
+  
+  tft.drawString("Updating Weather...", 10, 140, 2);
+  
+  http.begin(api_url);
+  //http.setInsecure(); // 為了相容性，暫時忽略 HTTPS 憑證驗證。compile error, 沒有這行程式碼的情況下，ESP32 也能成功建立 HTTPS 連線s
+  int httpCode = http.GET();  
+  
+  if (httpCode == HTTP_CODE_OK) {
+    String payload = http.getString();
+    
+    DynamicJsonDocument doc(4096);
+    DeserializationError error = deserializeJson(doc, payload);
+    
+    if (!error) {
+      JsonObject records_location = doc["records"]["location"][0];
+      
+      // 取得天氣狀態
+      JsonObject weatherElement_0 = records_location["weatherElement"][0];
+      JsonArray time_0_element = weatherElement_0["time"];
+      weatherDescription = time_0_element[0]["parameter"]["parameterName"].as<String>();
+      
+      // 取得降雨機率 (PoP)
+      JsonObject weatherElement_1 = records_location["weatherElement"][1];
+      pop = weatherElement_1["time"][0]["parameter"]["parameterName"].as<int>();
+      
+      // 取得最低溫度
+      JsonObject weatherElement_2 = records_location["weatherElement"][2];
+      minTemp = weatherElement_2["time"][0]["parameter"]["parameterName"].as<int>();
+      
+      // 取得最高溫度
+      JsonObject weatherElement_4 = records_location["weatherElement"][4];
+      maxTemp = weatherElement_4["time"][0]["parameter"]["parameterName"].as<int>();
+    } else {
+      weatherDescription = "JSON Failed";
+      minTemp = 0;
+      maxTemp = 0;
+      pop = 0;
+    }
+  } else {
+    weatherDescription = "HTTP Failed";
+    minTemp = 0;
+    maxTemp = 0;
+    pop = 0;
+  }
+  
+  http.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  tft.init();
+  tft.setRotation(3);
+  tft.fillScreen(TFT_BLACK);
+  
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("Connecting to WiFi...", 10, 10, 2);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\nWiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  
+  getWeather();
+}
+
+void loop() {
+  // 每 30 分鐘更新一次天氣資料
+  static unsigned long lastWeatherUpdate = 0;
+  if (millis() - lastWeatherUpdate > 1800000) { // 30分鐘 = 30 * 60 * 1000 ms
+    getWeather();
+    lastWeatherUpdate = millis();
+  }
+
+  tft.fillScreen(TFT_BLACK);
+  
+  // 設定 IP 位址的顏色為綠色，背景為黑色
+  tft.setTextColor(TFT_GREEN, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.drawString("IP:", 10, 10);
+  tft.drawString(WiFi.localIP().toString(), 50, 10);
+  
+  // 設定時間的顏色為白色，背景為黑色
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+  struct tm timeinfo;
+  getLocalTime(&timeinfo);
+  char time_str[20];
+  strftime(time_str, sizeof(time_str), "%H:%M:%S", &timeinfo);
+  tft.drawString(time_str, 10, 40);
+  
+  // 顯示日期，顏色沿用白色
+  char date_str[20];
+  strftime(date_str, sizeof(date_str), "%Y-%m-%d", &timeinfo);
+  tft.drawString(date_str, 10, 70);
+
+  // 設定天氣資訊的背景
+  int weatherBox_X = 5;
+  int weatherBox_Y = 95;
+  int weatherBox_W = 200;
+  int weatherBox_H = 70; // 調整高度以容納更多資訊
+  tft.fillRect(weatherBox_X, weatherBox_Y, weatherBox_W, weatherBox_H, TFT_BLUE);
+  
+  // 在藍色背景上繪製黃色文字
+  tft.setTextColor(TFT_YELLOW, TFT_BLUE);
+  tft.setTextSize(2);
+  
+  String tempRange = String(minTemp) + " ~ " + String(maxTemp) + " C";
+  //tft.drawString(tempRange, 10, 150); // 調整 Y 座標
+  tft.drawString("Temp: "+ tempRange, 10, 100);
+  //tft.drawString(weatherDescription, 10, 125); // 調整 Y 座標
+    
+  String popInfo = "Rain: " + String(pop) + "%";
+  tft.drawString(popInfo, 10, 125); // 新增：顯示降雨機率
+  
+  delay(10000);
+}
